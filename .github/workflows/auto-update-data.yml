@@ -1,4 +1,4 @@
-name: 自动更新库存数据
+name: 自动更新库存数据（合并所有Sheet）
 
 on:
   workflow_dispatch:
@@ -11,44 +11,73 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: 转换 Excel 到 JSON
+      - name: 合并所有Sheet生成data.json
         run: |
-          EXCEL_FILE=$(find . -name "*.xlsx" | head -1)
-          if [ -z "$EXCEL_FILE" ]; then
-            echo "❌ 无 Excel 文件！上传库存明细.xlsx"
-            exit 1
-          fi
-          echo "✅ 找到: $EXCEL_FILE"
-          npm init -y
-          npm install xlsx
-          node <<EOF
+          EXCEL=$(find . -name "*.xlsx" | head -1)
+          echo "找到文件: $EXCEL"
+          
+          npm init -y > /dev/null
+          npm install xlsx > /dev/null
+          
+          node <<'EOF'
           const XLSX = require('xlsx');
           const fs = require('fs');
-          try {
-            const wb = XLSX.readFile(process.env.EXCEL_FILE || '$EXCEL_FILE');
-            const ws = wb.Sheets[wb.SheetNames[0]];
-            const data = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
-            const clean = data.slice(1).filter(r => r.some(c => c));
-            fs.mkdirSync('data', {recursive:true});
-            fs.writeFileSync('data/data.json', JSON.stringify(clean, null, 2));
-            console.log('✅ 成功！行数: ' + clean.length);
-            console.log('预览: ' + JSON.stringify(clean[0]));
-          } catch(e) {
-            console.error('❌ 错误: ' + e.message);
-            process.exit(1);
-          }
+          const path = process.env.EXCEL || process.argv[2];
+          
+          const workbook = XLSX.readFile(path);
+          let allRows = [];
+          
+          workbook.SheetNames.forEach(sheetName => {
+            // 跳过完全空白的 sheet
+            if (!sheetName || sheetName.includes('空白')) return;
+            
+            const sheet = workbook.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+            
+            // 通常第1行是标题，第2行开始是数据
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              if (!row || row.length < 3) continue;
+              
+              // 找到“库存”列（模糊匹配）
+              const stockIndex = rows[0].findIndex(h => 
+                h && (h.toString().includes('库存') || h.toString().includes('数量') || h.toString().includes('stock'))
+              );
+              if (stockIndex === -1) continue;
+              
+              const stock = parseInt(row[stockIndex]) || 0;
+              if (stock <= 0) continue; // 只保留有库存的
+              
+              const typeIndex = rows[0].findIndex(h => h && h.toString().includes('型号'));
+              const specIndex = rows[0].findIndex(h => h && (h.toString().includes('规格') || h.toString().includes('螺纹')));
+              
+              allRows.push({
+                sheet: sheetName.trim(),
+                型号: (typeIndex >= 0 ? row[typeIndex] : '').toString().trim(),
+                规格: (specIndex >= 0 ? row[specIndex] : '').toString().trim(),
+                库存: stock
+              });
+            }
+          });
+          
+          // 按库存降序排序
+          allRows.sort((a,b) => b.库存 - a.库存);
+          
+          fs.mkdirSync('data', { recursive: true });
+          fs.writeFileSync('data/data.json', JSON.stringify(allRows, null, 2));
+          
+          console.log(`成功合并 ${workbook.SheetNames.length} 个sheet，共 ${allRows.length} 条有库存记录`);
+          console.log('Top5预览:', allRows.slice(0,5));
           EOF
 
-      - name: 提交
+      - name: 提交新data.json
         run: |
-          git config user.name "Bot"
+          git config user.name "库存机器人"
           git config user.email "bot@github.com"
           git add data/data.json
-          if git diff --staged --quiet; then echo "无变化"; else git commit -m "更新 JSON $(date)"; git push; fi
+          git diff --staged --quiet || (git commit -m "自动更新库存数据（全sheet合并）" && git push)
