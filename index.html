@@ -65,20 +65,24 @@
     let currentSheetData = [];  // 当前选中的型号全部数据（用于智能搜索）
 
     async function loadExcel() {
-      const urls = ["data.xlsx", "螺纹护套库存明细 202512(1).xlsx"];
-      for (let url of urls) {
-        try {
-          const resp = await fetch(url + "?t=" + Date.now());
-          if (resp.ok) {
-            workbook = XLSX.read(await resp.arrayBuffer(), { type: "array" });
-            document.getElementById("updateTime").textContent = "数据更新时间: " + new Date().toLocaleString('zh-CN');
-            parseAllSheets();
-            return;
-          }
-        } catch(e) {}
-      }
-      alert("未找到 data.xlsx 文件！");
-    }
+  try {
+    const resp = await fetch('data/data.json?t=' + Date.now());
+    if (!resp.ok) throw new Error('网络错误');
+    
+    const jsonData = await resp.json();
+    allData = jsonData;
+    currentSheetData = jsonData;
+
+    document.getElementById("updateTime").textContent = 
+      "数据更新时间：" + new Date().toLocaleString("zh-CN");
+
+    parseAllSheets();           // 你原来的解析函数完全不用改
+    console.log("成功加载", jsonData.length, "条库存数据");
+  } catch (e) {
+    alert("加载 data.json 失败！请检查 GitHub Actions 是否已生成文件");
+    console.error(e);
+  }
+}
 
     function parseAllSheets() {
       allData = {};
