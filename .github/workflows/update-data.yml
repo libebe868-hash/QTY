@@ -1,0 +1,66 @@
+name: 自动更新库存数据
+
+on:
+  workflow_dispatch:  # 手动运行按钮
+  push:
+    paths:
+      - '螺纹护套/**'  # 你的 Excel 在这个文件夹，改动就触发（可调整）
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 转换 Excel 到 JSON
+        run: |
+          # 找你的 Excel 文件（支持子文件夹）
+          EXCEL_PATH=$(find . -name "*.xlsx" -path "*/螺纹护套/*" | head -1)
+          if [ -z "$EXCEL_PATH" ]; then
+            echo "❌ 未找到 Excel 文件！请上传到螺纹护套文件夹。"
+            exit 1
+          fi
+          echo "找到文件: $EXCEL_PATH"
+          
+          # 安装 xlsx 并转换
+          npm init -y
+          npm install xlsx
+          
+          node << 'EOF'
+          const XLSX = require('xlsx');
+          const fs = require('fs');
+          const path = require('path');
+          try {
+            const workbook = XLSX.readFile(process.env.EXCEL_PATH || '螺纹护套/库存明细.xlsx');
+            const sheetName = workbook.SheetNames[0];  // 取第一个 sheet
+            const worksheet = workbook.Sheets[sheetName];
+            // 转成 JSON 数组（header:1 保持原始行结构，适合你的 parseAllSheets）
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+            // 过滤空行
+            const cleanData = jsonData.filter(row => row.length > 0 && row.some(cell => cell !== '' && cell !== null));
+            // 创建 data 文件夹并写文件
+            fs.mkdirSync('data', { recursive: true });
+            fs.writeFileSync('data/data.json', JSON.stringify(cleanData, null, 2));
+            console.log(`✅ 转换成功！Sheet: ${sheetName}, 总行: ${cleanData.length}`);
+          } catch (error) {
+            console.error('❌ 转换错误:', error.message);
+            process.exit(1);
+          }
+          EOF
+
+      - name: 提交 JSON
+        run: |
+          git config user.name "库存自动更新 Bot"
+          git config user.email "bot@example.com"
+          git add data/data.json
+          if git diff --staged --quiet; then
+            echo "无变化"
+          else
+            git commit -m "🤖 更新库存 JSON (从 Excel 转换) - $(date +'%Y-%m-%d')"
+            git push
+          fi
