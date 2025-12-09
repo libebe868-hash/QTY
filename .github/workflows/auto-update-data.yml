@@ -1,4 +1,4 @@
-name: 自动更新库存数据（合并所有Sheet）
+name: 自动更新库存数据（强制合并所有有效行）
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: 20
 
-      - name: 合并所有Sheet生成data.json
+      - name: 合并所有Sheet（跳过空行）
         run: |
           EXCEL=$(find . -name "*.xlsx" | head -1)
           echo "找到文件: $EXCEL"
@@ -27,57 +27,40 @@ jobs:
           node <<'EOF'
           const XLSX = require('xlsx');
           const fs = require('fs');
-          const path = process.env.EXCEL || process.argv[2];
+          const path = process.env.EXCEL || '$EXCEL';
           
           const workbook = XLSX.readFile(path);
           let allRows = [];
           
           workbook.SheetNames.forEach(sheetName => {
-            // 跳过完全空白的 sheet
-            if (!sheetName || sheetName.includes('空白')) return;
+            if (sheetName.includes('空白') || sheetName === 'Sheet1') return;
             
             const sheet = workbook.Sheets[sheetName];
-            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+            const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
             
-            // 通常第1行是标题，第2行开始是数据
-            for (let i = 1; i < rows.length; i++) {
-              const row = rows[i];
-              if (!row || row.length < 3) continue;
-              
-              // 找到“库存”列（模糊匹配）
-              const stockIndex = rows[0].findIndex(h => 
-                h && (h.toString().includes('库存') || h.toString().includes('数量') || h.toString().includes('stock'))
-              );
-              if (stockIndex === -1) continue;
-              
-              const stock = parseInt(row[stockIndex]) || 0;
-              if (stock <= 0) continue; // 只保留有库存的
-              
-              const typeIndex = rows[0].findIndex(h => h && h.toString().includes('型号'));
-              const specIndex = rows[0].findIndex(h => h && (h.toString().includes('规格') || h.toString().includes('螺纹')));
-              
-              allRows.push({
-                sheet: sheetName.trim(),
-                型号: (typeIndex >= 0 ? row[typeIndex] : '').toString().trim(),
-                规格: (specIndex >= 0 ? row[specIndex] : '').toString().trim(),
-                库存: stock
-              });
+            // 跳过标题行，从第1行数据开始
+            for (let i = 1; i < jsonData.length; i++) {
+              const row = jsonData[i];
+              // 只过滤完全空行
+              if (row.length > 0 && row.some(cell => cell !== '' && cell !== null)) {
+                allRows.push({
+                  sheet: sheetName,
+                  rowData: row  // 保留完整行，列索引0=型号, 最后几列=库存等
+                });
+              }
             }
           });
-          
-          // 按库存降序排序
-          allRows.sort((a,b) => b.库存 - a.库存);
           
           fs.mkdirSync('data', { recursive: true });
           fs.writeFileSync('data/data.json', JSON.stringify(allRows, null, 2));
           
-          console.log(`成功合并 ${workbook.SheetNames.length} 个sheet，共 ${allRows.length} 条有库存记录`);
-          console.log('Top5预览:', allRows.slice(0,5));
+          console.log(`成功！总sheet: ${workbook.SheetNames.length}, 有效行: ${allRows.length}`);
+          console.log('Top3预览:', JSON.stringify(allRows.slice(0,3), null, 2));
           EOF
 
-      - name: 提交新data.json
+      - name: 提交
         run: |
           git config user.name "库存机器人"
           git config user.email "bot@github.com"
           git add data/data.json
-          git diff --staged --quiet || (git commit -m "自动更新库存数据（全sheet合并）" && git push)
+          if git diff --staged --quiet; then echo "无变化"; else git commit -m "自动更新JSON $(date)"; git push; fi
