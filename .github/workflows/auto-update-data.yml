@@ -1,4 +1,4 @@
-name: 更新库存数据
+name: 更新库存数据（简化版）
 
 on:
   workflow_dispatch:
@@ -16,37 +16,31 @@ jobs:
         with:
           node-version: 20
 
-      - name: 转换 stock.xlsx
+      - name: 读取 stock.xlsx 并输出所有非空行
         run: |
           npm install xlsx
           node -e "
           const XLSX = require('xlsx');
           const fs = require('fs');
           const wb = XLSX.readFile('stock.xlsx');
-          let arr = [];
-          wb.SheetNames.forEach(s=>{
-            if(s.includes('空白'))return;
-            const ws = wb.Sheets[s];
-            const rows = XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-            if(rows.length<2)return;
-            let kucunIdx = rows[0].findIndex(h=>h&&/库存|数量|stock/i.test(h));
-            if(kucunIdx===-1) kucunIdx = rows[0].length-1;
-            for(let i=1;i<rows.length;i++){
-              let kucun = parseInt(rows[i][kucunIdx])||0;
-              if(kucun>0){
-                arr.push({
-                  sheet:s,
-                  型号:String(rows[i][0]||'').trim(),
-                  规格:String(rows[i][1]||rows[i][2]||'').trim(),
-                  库存:kucun
+          let allData = [];
+          wb.SheetNames.forEach(sheetName => {
+            const ws = wb.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+            rows.forEach((row, rowIndex) => {
+              if (row.length > 0) {
+                allData.push({
+                  sheet: sheetName,
+                  rowIndex: rowIndex,
+                  data: row.map(cell => String(cell || '').trim())
                 });
               }
-            }
+            });
           });
-          arr.sort((a,b)=>b.库存-a.库存);
-          fs.mkdirSync('data',{recursive:true});
-          fs.writeFileSync('data/data.json',JSON.stringify(arr,null,2));
-          console.log('成功生成 '+arr.length+' 条记录');
+          fs.mkdirSync('data', {recursive: true});
+          fs.writeFileSync('data/data.json', JSON.stringify(allData, null, 2));
+          console.log('输出总行数: ' + allData.length);
+          console.log('前5行预览: ' + JSON.stringify(allData.slice(0,5)));
           "
 
       - name: 提交
@@ -54,4 +48,4 @@ jobs:
           git config user.name "bot"
           git config user.email "bot@github.com"
           git add data/data.json
-          git commit -m "自动更新库存数据" && git push || echo "无变化"
+          git commit -m "更新所有数据行" && git push || echo "无变化"
