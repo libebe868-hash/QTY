@@ -1,0 +1,70 @@
+name: 自动更新库存数据
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    paths:
+      - 'data.xlsx'  # 只在 data.xlsx 变化时触发
+  schedule:
+    - cron: '0 2 * * *'  # 每天北京时间上午10:00自动运行（可改）
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 转换 data.xlsx → data.json
+        run: |
+          if [ ! -f "data.xlsx" ]; then
+            echo "❌ 找不到 data.xlsx，请上传到根目录"
+            exit 1
+          fi
+          echo "✅ 开始转换…"
+
+          npm install xlsx
+
+          node -e "
+          const XLSX = require('xlsx');
+          const fs = require('fs');
+          const wb = XLSX.readFile('data.xlsx');
+          let all = [];
+          wb.SheetNames.forEach(s => {
+            if (s.includes('空白') || s === 'Sheet1') return;
+            const ws = wb.Sheets[s];
+            const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+            if (rows.length < 2) return;
+            const stockCol = rows[0].length - 1;  // 最后一列：现库存
+            for (let i = 1; i < rows.length; i++) {
+              const r = rows[i];
+              if (!r || r.length < 2) continue;
+              const model = String(r[0] || '').trim();
+              if (!model) continue;
+              const stock = parseInt(r[stockCol]) || 0;
+              if (stock > 0) {
+                all.push({
+                  sheet: s,
+                  型号: model,
+                  规格: String(r[1] || r[2] || '').trim(),
+                  库存: stock
+                });
+              }
+            }
+          });
+          all.sort((a, b) => b.库存 - a.库存);
+          fs.mkdirSync('data', {recursive: true});
+          fs.writeFileSync('data/data.json', JSON.stringify(all, null, 2));
+          console.log('✅ 成功！' + all.length + ' 条记录');
+          console.log('Top 3: ' + JSON.stringify(all.slice(0, 3)));
+          "
+
+      - name: 提交 data.json
+        run: |
+          git config user.name "库存机器人"
+          git config user.email "bot@github.com"
+          git add data/data.json
+          git commit -m "自动更新库存数据 $(date +'%Y-%m-%d %H:%M')" && git push || echo "无变化"
