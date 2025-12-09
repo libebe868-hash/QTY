@@ -1,10 +1,10 @@
-name: 自动更新库存数据（完整数据提取）
+name: 自动更新库存数据
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - '**/*.xlsx'
+      - 'stock.xlsx'
 
 jobs:
   convert:
@@ -16,43 +16,63 @@ jobs:
         with:
           node-version: 20
 
-      - name: 提取所有Sheet完整数据
+      - name: 转换 stock.xlsx → data.json
         run: |
-          EXCEL=$(find . -name "*.xlsx" | head -1)
-          echo "找到 Excel: $EXCEL"
-          
+          if [ ! -f "stock.xlsx" ]; then
+            echo "找不到 stock.xlsx！"
+            exit 1
+          fi
+          echo "找到 stock.xlsx，开始转换…"
+
           npm init -y > /dev/null
           npm install xlsx > /dev/null
-          
-          node <<'EOF'
+
+          node - <<'EOF'
           const XLSX = require('xlsx');
           const fs = require('fs');
-          const path = process.env.EXCEL || '$EXCEL';
-          
-          const workbook = XLSX.readFile(path);
-          let allSheetsData = {};
-          
-          workbook.SheetNames.forEach(sheetName => {
-            const sheet = workbook.Sheets[sheetName];
-            const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-            
-            // 只过滤完全空行（保留所有非空行，包括标题）
-            const cleanData = jsonData.filter(row => row.length > 0 && row.some(cell => cell !== '' && cell !== null));
-            
-            allSheetsData[sheetName] = cleanData;
-            console.log(`Sheet "${sheetName}": ${cleanData.length} 行`);
+
+          const workbook = XLSX.readFile('stock.xlsx');
+          let allItems = [];
+
+          workbook.SheetNames.forEach(name => {
+            if (name.includes('空白')) return;
+            const sheet = workbook.Sheets[name];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+            if (rows.length < 2) return;
+
+            // 找库存列（模糊匹配）
+            const header = rows[0];
+            let stockIdx = header.findIndex(h => h && /库存|数量|stock/i.test(h.toString()));
+            if (stockIdx === -1) stockIdx = header.length - 1; // 没找到就用最后一列
+
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              const stock = parseInt(row[stockIdx]) || 0;
+              if (stock <= 0) continue;
+
+              allItems.push({
+                sheet: name,
+                型号: row[0] || '',
+                规格: (row[1] || row[2] || '').toString(),
+                库存: stock
+              });
+            }
           });
-          
+
+          // 按库存降序
+          allItems.sort((a, b) => b.库存 - a.库存);
+
           fs.mkdirSync('data', { recursive: true });
-          fs.writeFileSync('data/data.json', JSON.stringify(allSheetsData, null, 2));
-          
-          console.log(`总sheet: ${Object.keys(allSheetsData).length}`);
-          console.log('第一个sheet预览:', JSON.stringify(allSheetsData[Object.keys(allSheetsData)[0]]?.slice(0, 3) || '无数据'));
+          fs.writeFileSync('data/data.json', JSON.stringify(allItems, null, 2));
+
+          console.log(`成功！共 ${allItems.length} 条有库存记录`);
+          console.log('Top 3:', allItems.slice(0,3));
           EOF
 
-      - name: 提交
+      - name: 提交 data.json
         run: |
           git config user.name "库存机器人"
           git config user.email "bot@github.com"
           git add data/data.json
-          git diff --staged --quiet || (git commit -m "更新完整JSON $(date)" && git push)
+          git diff --staged --quiet || (git commit -m "自动更新库存 $(date +'%Y-%m-%d %H:%M')" && git push)
